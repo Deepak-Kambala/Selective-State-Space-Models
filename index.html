@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Selective State Space Models: A Linear-Time Alternative to Attention</title>
+<meta name="description" content="Discretization, input-dependent selection and the parallel scan in Mamba-style selective state space models. NeurIPS 2026 Education Track.">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="masthead">
+  <div class="wrap">
+    <p class="venue">NeurIPS 2026 Education Track</p>
+    <h1>Selective State Space Models: A Linear-Time Alternative to Attention</h1>
+    <p class="author">Deepak Kambala<br><span>JNTUK University College of Engineering Narasaraopet</span></p>
+    <nav class="links" aria-label="Materials">
+      <a href="https://github.com/Deepak-Kambala/Selective-State-Space-Models/blob/main/draft.pdf">Paper (PDF)</a>
+      <a href="https://github.com/Deepak-Kambala/Selective-State-Space-Models/blob/main/01_from_rnn_to_ssm.ipynb">Notebook 1</a>
+      <a href="https://github.com/Deepak-Kambala/Selective-State-Space-Models/blob/main/02_adding_selectivity.ipynb">Notebook 2</a>
+      <a href="https://github.com/Deepak-Kambala/Selective-State-Space-Models/blob/main/03_scan_vs_sequential.ipynb">Notebook 3</a>
+      <a href="https://github.com/Deepak-Kambala/Selective-State-Space-Models/blob/main/questions.pdf">Exercises</a>
+      <a href="https://github.com/Deepak-Kambala/Selective-State-Space-Models/blob/main/solutions.pdf">Solutions</a>
+      <a href="https://github.com/Deepak-Kambala/Selective-State-Space-Models">GitHub repository</a>
+    </nav>
+  </div>
+</header>
+
+<div class="layout wrap">
+<aside class="toc"><nav aria-label="Contents">
+  <a href="#overview">Overview</a>
+  <a href="#recurrence">Linear recurrence</a>
+  <a href="#discretization">Discretization</a>
+  <a href="#selectivity">Selectivity</a>
+  <a href="#scan">Parallel scan</a>
+  <a href="#duality">Duality with attention</a>
+  <a href="#comparison">Comparison</a>
+  <a href="#limits">Limits</a>
+  <a href="#materials">Teaching materials</a>
+  <a href="#references">References</a>
+</nav></aside>
+
+<main>
+<section id="overview">
+  <h2>Overview</h2>
+  <p>Self-attention compares every token with every other token, so its cost grows quadratically with sequence length <span class="m">L</span>. A state space model (SSM) instead carries a fixed-size hidden state <span class="m">h_t \in \mathbb{R}^N</span> through the sequence and updates it with a linear recurrence, which costs time linear in <span class="m">L</span> and constant memory per decoding step.</p>
+  <p>Earlier SSMs (S4 and relatives) used the same parameters at every position, so the model could not choose which tokens to keep or ignore. Mamba makes <span class="m">B</span>, <span class="m">C</span> and the step size <span class="m">\Delta</span> functions of the input, which gives content-based selection. That change removes the global-convolution form S4 relied on for parallel training; Mamba replaces it with a hardware-aware parallel scan. Mamba-2 shows that a restricted selective SSM is equivalent to a form of linear attention.</p>
+  <p>This page works through three pieces: discretizing a continuous linear system, making it input-dependent, and parallelizing the resulting recurrence. The paper was accepted to the NeurIPS 2026 Education Track and ships with three notebooks and five exercises with solutions.</p>
+</section>
+
+<section id="recurrence">
+  <h2>Linear recurrence</h2>
+  <p>A discretized SSM maps an input sequence <span class="m">x_t</span> to an output <span class="m">y_t</span> through a hidden state:</p>
+  <div class="eq">h_t = \bar{A}\,h_{t-1} + \bar{B}\,x_t, \qquad y_t = C\,h_t</div>
+  <p><span class="m">\bar A</span> and <span class="m">\bar B</span> are discretized versions of continuous-time matrices <span class="m">A</span> and <span class="m">B</span> with step size <span class="m">\Delta</span>. With fixed parameters the model is linear-time and can be unrolled into a convolution, but it treats every position identically.</p>
+  <figure>
+    <svg viewBox="0 0 640 150" role="img" aria-label="Recurrence diagram: x_t enters, state h_{t-1} is scaled by A-bar, summed with B-bar x_t to give h_t, and C maps h_t to y_t">
+      <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
+      <g class="d-line" marker-end="url(#ar)">
+        <line x1="40" y1="110" x2="150" y2="110"/><line x1="230" y1="110" x2="290" y2="75"/>
+        <line x1="40" y1="40" x2="150" y2="40"/><line x1="230" y1="40" x2="290" y2="65"/>
+        <line x1="340" y1="70" x2="420" y2="70"/><line x1="500" y1="70" x2="580" y2="70"/>
+      </g>
+      <g class="d-box"><rect x="150" y="22" width="80" height="36" rx="4"/><rect x="150" y="92" width="80" height="36" rx="4"/><circle cx="315" cy="70" r="24"/><rect x="420" y="52" width="80" height="36" rx="4"/></g>
+      <g class="d-t" text-anchor="middle">
+        <text x="190" y="45">Ā h<tspan baseline-shift="sub" font-size="10">t−1</tspan></text><text x="190" y="115">B̄ x<tspan baseline-shift="sub" font-size="10">t</tspan></text>
+        <text x="315" y="75">+</text><text x="380" y="62" font-size="12">h<tspan baseline-shift="sub" font-size="9">t</tspan></text><text x="460" y="75">C</text>
+        <text x="20" y="45">h<tspan baseline-shift="sub" font-size="10">t−1</tspan></text><text x="20" y="115">x<tspan baseline-shift="sub" font-size="10">t</tspan></text><text x="605" y="75">y<tspan baseline-shift="sub" font-size="10">t</tspan></text>
+      </g>
+    </svg>
+    <figcaption>One step of the recurrence. The state size is fixed, so memory per step does not depend on <span class="m">L</span>.</figcaption>
+  </figure>
+</section>
+
+<section id="discretization">
+  <h2>Discretization</h2>
+  <p>Take the scalar system <span class="m">h'(t) = a\,h(t) + b\,x(t)</span> and hold the input constant, <span class="m">x(t) = x_k</span>, on <span class="m">[k\Delta, (k+1)\Delta)</span> (zero-order hold). Solving the linear ODE from <span class="m">h(k\Delta) = h_k</span> gives</p>
+  <div class="eq">h(t) = e^{a(t-k\Delta)}\,h_k + \frac{b\,x_k}{a}\left(e^{a(t-k\Delta)} - 1\right)</div>
+  <p>Evaluating at <span class="m">t = (k+1)\Delta</span>:</p>
+  <div class="eq">h_{k+1} = \underbrace{e^{a\Delta}}_{\bar a}\,h_k + \underbrace{\frac{e^{a\Delta}-1}{a}\,b}_{\bar b}\,x_k</div>
+  <p>For <span class="m">a &lt; 0</span>, <span class="m">\bar a = e^{a\Delta} \in (0,1)</span> for every <span class="m">\Delta &gt; 0</span>. A larger <span class="m">\Delta</span> forgets the previous state faster; it cannot destabilize the system. Notebook 1 compares the discrete recurrence with RK4 numerical integration of the continuous system <span class="m">a=-0.8,\; b=1,\; \Delta=0.05,\; L=50</span> and reports the maximum absolute error.</p>
+  <div class="panel" id="zoh">
+    <h3>Zero-order hold calculator</h3>
+    <div class="fields">
+      <label><span class="m">a</span> <input id="za" type="number" step="any" value="-4"></label>
+      <label><span class="m">b</span> <input id="zb" type="number" step="any" value="2"></label>
+      <label><span class="m">\Delta</span> <input id="zd" type="number" step="any" value="0.25"></label>
+    </div>
+    <table class="out"><tr><th><span class="m">\bar a=e^{a\Delta}</span></th><td id="zabar"></td></tr><tr><th><span class="m">\bar b=(\bar a-1)b/a</span></th><td id="zbbar"></td></tr><tr><th><span class="m">|\bar a|&lt;1</span> (stable)</th><td id="zstab"></td></tr></table>
+    <p class="note">For <span class="m">a=-4,\;b=2</span>: <span class="m">\Delta=0.25</span> gives <span class="m">\bar a=0.3679,\;\bar b=0.3161</span>. <span class="m">\Delta=2.0</span> gives <span class="m">\bar a=0.0003,\;\bar b=0.4998</span>.</p>
+  </div>
+</section>
+
+<section id="selectivity">
+  <h2>Selectivity</h2>
+  <p>In a selective SSM the input determines how the state is updated:</p>
+  <div class="eq">B_t = W_B\,x_t, \qquad C_t = W_C\,x_t, \qquad \Delta_t = \mathrm{softplus}(W_\Delta\,x_t)</div>
+  <div class="eq">\bar a_t = e^{\Delta_t A}, \qquad \bar b_t = \Delta_t B_t, \qquad h_t = \bar a_t \odot h_{t-1} + \bar b_t, \qquad y_t = C_t \cdot h_t</div>
+  <p>Here <span class="m">A</span> is diagonal and negative, and the input enters the state through <span class="m">B_t</span>. Mamba additionally multiplies by the channel input and uses a per-channel <span class="m">\Delta_t</span>; the notebook uses one scalar <span class="m">\Delta_t</span> per timestep, shared across state channels, and the first-order form <span class="m">\Delta B</span> in place of the ZOH expression for <span class="m">\bar b</span>.</p>
+  <p>When <span class="m">\Delta_t</span> is large, <span class="m">\bar a_t</span> is near 0: the state is overwritten by the current token. When <span class="m">\Delta_t</span> is near 0, <span class="m">\bar a_t</span> is near 1 and the current token barely changes the state. The model learns from content which tokens to retain and which to skip.</p>
+  <p>Because the coefficients now differ at every position, the recurrence is no longer a convolution with a fixed kernel, and S4's FFT-based training does not apply.</p>
+  <p>Notebook 2 trains this block on a synthetic selective-copying task. A few marker positions carry a signal value in [−1, 1] and all other positions carry small background noise; the target at every step is the most recent marker value. The notebook compares the block with a fixed-parameter SSM and plots the learned <span class="m">\Delta_t</span> against marker positions.</p>
+  <h3>Tensor shapes in the reference block</h3>
+  <p>For batch 16, length 30, input dimension 4 and state dimension 12:</p>
+  <table>
+    <thead><tr><th>Tensor</th><th>Shape</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><code>A</code></td><td><span class="m">(12,)</span></td><td>one decay rate per state channel</td></tr>
+      <tr><td><code>B_t</code>, <code>C_t</code></td><td><span class="m">(16,30,12)</span></td><td><code>nn.Linear(4, 12)</code> on the last axis</td></tr>
+      <tr><td><code>delta</code></td><td><span class="m">(16,30,1)</span></td><td><code>nn.Linear(4, 1)</code>, <span class="m">\operatorname{softplus}</span></td></tr>
+      <tr><td><code>a_bar</code>, <code>b_bar</code> at step <span class="m">t</span></td><td><span class="m">(16,12)</span></td><td>broadcast of <span class="m">(16,1)</span> with <span class="m">(12,)</span> or <span class="m">(16,12)</span></td></tr>
+      <tr><td><code>h</code></td><td><span class="m">(16,12)</span></td><td>shape unchanged across steps</td></tr>
+      <tr><td>output <code>y</code></td><td><span class="m">(16,30,1)</span></td><td>sum over state axis, stack over time</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="scan">
+  <h2>Parallel scan</h2>
+  <p>The recurrence <span class="m">h_t = \bar a_t h_{t-1} + \bar b_t</span> looks sequential, but each step is an affine map, and composition of affine maps is associative. Represent step <i>t</i> as a pair <span class="m">(\bar a_t, \bar b_t)</span> with</p>
+  <div class="eq">(a_1, b_1) \bullet (a_2, b_2) = (a_2 a_1,\; a_2 b_1 + b_2)</div>
+  <p>Any associative operator can be evaluated as a scan in logarithmic depth. Notebook 3 implements a doubling scan: in each round every element combines with the element <span class="m">2^k</span> positions earlier, for <span class="m">k=0,1,\dots</span> until <span class="m">2^k</span> reaches the padded length. The initial state is folded in as one extra element, so <span class="m">n=L+1</span>, and the sequence is padded to the next power of two. The number of rounds is</p>
+  <div class="eq">\text{rounds} = \lceil \log_2 n \rceil</div>
+  <figure>
+    <div id="scanchart" class="chart" role="img" aria-label="Chart of scan rounds versus sequence length"></div>
+    <figcaption>Rounds of the doubling scan against sequence length (log-scaled horizontal axis). The sequential loop needs <span class="m">L</span> steps.</figcaption>
+  </figure>
+  <table class="num" id="scantable"><thead><tr><th><span class="m">L</span></th><th><span class="m">n=L+1</span></th><th>Padded <span class="m">n</span></th><th>Rounds</th><th>Sequential steps</th></tr></thead><tbody></tbody></table>
+  <p>The doubling scan performs <span class="m">O(n \log n)</span> combine operations against <span class="m">n</span> for the sequential loop, but its depth is <span class="m">\lceil \log_2 n \rceil</span>, which a GPU can exploit. Mamba uses a fused, work-efficient, hardware-aware implementation. On CPU, the speedup in Notebook 3 comes from fewer, larger vectorized operations rather than hardware parallelism.</p>
+</section>
+
+<section id="duality">
+  <h2>Duality with attention</h2>
+  <p>Mamba-2 introduces structured state space duality: restricting the transition to a scalar-times-identity form makes the SSM equal to a masked, linear-attention-like operator. The same layer can therefore be computed either as a recurrence or as a matrix multiplication, and the matrix form allows a faster algorithm on hardware optimized for matmuls.</p>
+</section>
+
+<section id="comparison">
+  <h2>Comparison with attention and RNNs</h2>
+  <p><span class="m">L</span> is sequence length, <span class="m">d</span> the model dimension and <span class="m">N</span> the SSM state size.</p>
+  <table>
+    <thead><tr><th></th><th>Self-attention</th><th>Selective SSM</th><th>Vanilla RNN</th></tr></thead>
+    <tbody>
+      <tr><td>Compute per forward pass</td><td><span class="m">O(L^2 d)</span></td><td><span class="m">O(L N d)</span> work with a work-efficient scan, <span class="m">O(\log L)</span> depth</td><td><span class="m">O(L d^2)</span></td></tr>
+      <tr><td>Training parallelism over <span class="m">L</span></td><td>Full</td><td>Via parallel scan</td><td>Sequential</td></tr>
+      <tr><td>Decoding memory per step</td><td><span class="m">\mathrm{KV}</span> cache, about <span class="m">2Ld</span></td><td>State, <span class="m">O(Nd)</span>, independent of <span class="m">L</span></td><td>State, <span class="m">O(d)</span></td></tr>
+      <tr><td>Content-based selection</td><td>Yes</td><td>Yes (input-dependent <span class="m">\Delta, B, C</span>)</td><td>Gated variants only</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="limits">
+  <h2>Limits</h2>
+  <p>A fixed-size state compresses the history. On tasks that need exact retrieval of arbitrary earlier tokens, such as copying or looking up a specific token far back in the context, attention's per-token cache has an advantage that a memory-only comparison does not show (Jelassi et al., 2024).</p>
+  <p>A running average of marker values is a case the Notebook 2 block cannot compute exactly. It would need <span class="m">\bar a_t = (n-1)/n</span> after <span class="m">n</span> markers, but <span class="m">\bar a_t</span> is a function of <span class="m">x_t</span> alone and the input carries no marker count. Exercise 3 works through this and the minimal architectural change that fixes it.</p>
+</section>
+
+<section id="materials">
+  <h2>Teaching materials</h2>
+  <table>
+    <thead><tr><th>Item</th><th>Content</th></tr></thead>
+    <tbody>
+      <tr><td><a href="https://github.com/Deepak-Kambala/Selective-State-Space-Models/blob/main/01_from_rnn_to_ssm.ipynb">Notebook 1: From RNN to SSM</a></td><td>Plain linear recurrence; ZOH discretization checked numerically against the closed-form solution.</td></tr>
+      <tr><td><a href="https://github.com/Deepak-Kambala/Selective-State-Space-Models/blob/main/02_adding_selectivity.ipynb">Notebook 2: Adding selectivity</a></td><td>Input-dependent <span class="m">B, C, \Delta</span>; selective-copying task; fixed-parameter baseline; plot of learned <span class="m">\Delta_t</span> against marker positions.</td></tr>
+      <tr><td><a href="https://github.com/Deepak-Kambala/Selective-State-Space-Models/blob/main/03_scan_vs_sequential.ipynb">Notebook 3: Scan vs. sequential loop</a></td><td>Sequential and associative scan of the same recurrence; wall-clock benchmark with an optional GPU path.</td></tr>
+      <tr><td><a href="https://github.com/Deepak-Kambala/Selective-State-Space-Models/blob/main/questions.pdf">Exercises</a> and <a href="https://github.com/Deepak-Kambala/Selective-State-Space-Models/blob/main/solutions.pdf">solutions</a></td><td>Discretization by hand, tensor shapes, breaking selective copying, scan depth and padding, SSM vs. attention compute and memory.</td></tr>
+    </tbody>
+  </table>
+  <h3>Learning objectives</h3>
+  <ul>
+    <li>State the recurrence of a discretized SSM and explain why a fixed-parameter SSM is linear-time but non-selective.</li>
+    <li>Explain what selectivity adds and why it prevents the convolutional form used in S4.</li>
+    <li>Implement a minimal selective-scan layer in PyTorch and run it on a toy task.</li>
+    <li>Compare a selective SSM with self-attention and a vanilla RNN on compute, memory and long-range recall.</li>
+    <li>Extend the notebook with a variant scan, such as a bidirectional scan, and evaluate it.</li>
+  </ul>
+  <p>Toy tasks in Notebooks 1 and 2 run on CPU. The Notebook 3 benchmark has an optional GPU path.</p>
+</section>
+
+<section id="references">
+  <h2>References</h2>
+  <ol class="refs">
+    <li>A. Gu and T. Dao. Mamba: Linear-Time Sequence Modeling with Selective State Spaces. COLM, 2024. arXiv:2312.00752.</li>
+    <li>T. Dao and A. Gu. Transformers are SSMs: Generalized Models and Efficient Algorithms Through Structured State Space Duality. ICML, 2024.</li>
+    <li>Y. Liu, Y. Tian, Y. Zhao, et al. VMamba: Visual State Space Model. NeurIPS, 2024.</li>
+    <li>F. Rezaei Jafari, G. Montavon, K.-R. Müller, O. Eberle. MambaLRP: Explaining Selective State Space Sequence Models. NeurIPS, 2024.</li>
+    <li>S. Jelassi, D. Brandfonbrener, S. M. Kakade, E. Malach. Repeat After Me: Transformers are Better than State Space Models at Copying. ICML, 2024.</li>
+  </ol>
+</section>
+</main>
+</div>
+
+<footer class="wrap foot">Selective State Space Models. NeurIPS 2026 Education Track. Code released under Apache 2.0.</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.9/katex.min.js"></script>
+<script src="script.js"></script>
+</body>
+</html>
